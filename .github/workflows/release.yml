@@ -1,0 +1,29 @@
+name: Release (measure + attest)
+
+# Tag this repo (vX.Y.Z) to measure the deployment and publish its
+# snp-tdx-multiplatform attestation under THIS repo — that attestation is what the
+# secrets vault's snpVerifier checks (sigstore provenance → measurement).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release + tag
+      id-token: write       # keyless OIDC for the attestation
+      attestations: write   # write the attestation under this repo
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Measure, attest, and release
+        uses: tyurek/measure-image-action@main
+        with:
+          config-file: tinfoil-config.yml
+          github-token: ${{ github.token }}

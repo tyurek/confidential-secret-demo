@@ -1,37 +1,82 @@
-# Tinfoil Public Containers Template
+# confidential-secret-demo — Part B workload tenant
 
-A GitHub template for [Tinfoil Containers](https://docs.tinfoil.sh/containers/overview) where the image is **built from this repo** on every tagged release. Use this when your container's source lives alongside its deployment config.
+A minimal "tenant" repo for the confidential secrets vault **sigstore-provenance**
+path (Part B). Tagging this repo measures the deployment and publishes a
+`snp-tdx-multiplatform` attestation **under this repo** — which is exactly what the
+vault's `snpVerifier` checks: it proves the running enclave's measurement was built
+from this repo, then binds that to the live SEV-SNP quote before releasing secrets.
 
-This only works for **public repos**.
+```
+tag this repo ─▶ tyurek/measure-image-action ─▶ snp-tdx-multiplatform attestation
+                                                 (measurement, under this repo)
+                                                          │
+  vault put DEMO_SECRET --repo tyurek/confidential-secret-demo
+                                                          ▼
+  dev-launch on box2 ─▶ stage 3b sends the quote ─▶ vault: sigstore(this repo) ==
+  quote measurement ─▶ seals DEMO_SECRET to the enclave ─▶ container gets it
+```
 
-If you need to deploy a private image, use the [tinfoil-containers-template](https://github.com/tinfoilsh/tinfoil-containers-template) instead.
+## Files
+- `tinfoil-config.yml` — the **measured** config (its sha256 is the `tinfoil-config-hash`).
+- `external-config.yml` — host-authored, **not** measured; the `vault:` block for dev-launch.
+- `.github/workflows/release.yml` — tag → `tyurek/measure-image-action@main` → attest + release.
 
-## What's inside
+## Prereqs
+- `tyurek/cvmimage` has a release that **includes the split raw** (the `release.yml`
+  zstd+split change). Set `cvm-version` in `tinfoil-config.yml` to that version.
+- `tyurek/measure-image-action@main` is built (action.yaml → the fork's ghcr image).
 
-- `main.go` — a tiny Go HTTP server that responds with `Hello from a Tinfoil Container!`
-- `Dockerfile` — multi-stage build, statically linked, no extras
-- `tinfoil-config.yml` — the enclave config; the digest is rewritten by CI
-- `.github/workflows/tinfoil-build.yml` — builds the image, updates `tinfoil-config.yml`, pushes the version tag
-- `.github/workflows/tinfoil-release.yml` — measures the pinned image and publishes the attestation
+## 1. Publish the attestation
+```bash
+git tag v0.0.1 && git push origin v0.0.1     # triggers release.yml → measure → attest → release
+```
+This creates a release with `tinfoil-deployment.json` and a sigstore attestation of it
+under `tyurek/confidential-secret-demo`.
 
-## Use it
+## 2. Dry-run on box2
 
-1. Click **[Use this template](https://github.com/tinfoilsh/tinfoil-public-containers-template/generate)** → **Create a new repository** (must be public).
-2. In your new repo, edit `tinfoil-config.yml` and replace `OWNER/REPO` with your GitHub path (e.g. `ghcr.io/your-org/your-repo`). Commit.
-3. In the **Actions** tab, run the **Tinfoil Container Build** workflow and pass a version like `v0.0.1`.
-4. The workflow:
-   - Builds and pushes the image to `ghcr.io/<owner>/<repo>`
-   - Updates `tinfoil-config.yml` with the new digest via a self-merging PR
-   - Creates the version tag
-   - Triggers the release workflow, which measures the image and publishes the attestation
-5. Go to the [Tinfoil Dashboard](https://dash.tinfoil.sh) → **Containers** → **Deploy**, select your repo and tag, and deploy.
+> **Must be non-debug.** `measure-image-action` measures the *clean* cmdline. tinfoil's
+> *debug* mode appends `tinfoil-debug=on …` and injects an SSH container (changing the
+> config-hash), which would change the measurement and fail the `code == enclave` check.
+> So launch with `debug:false` — and verify via the shim, not SSH.
 
-Once running, your container is reachable at `https://<container-name>.<org>.containers.tinfoil.dev`.
+```bash
+V=0.0.0.4; R=tyurek/cvmimage; IMG=/mnt/large/tinfoil/images   # box2 ImageDir
 
-## Updating
+# a) fetch the cvmimage-fork artifacts + reassemble the raw into the ImageDir
+#    (so tinfoild's FetchLegacy cache-hits instead of hitting images.tinfoil.sh)
+gh release download "v$V" -R "$R" -D /tmp/cvm -p '*'
+sudo cp /tmp/cvm/tinfoil-inference-v$V.vmlinuz /tmp/cvm/tinfoil-inference-v$V.initrd "$IMG"/
+cat /tmp/cvm/tinfoil-inference-v$V.raw.zst.part.* | zstd -d | sudo tee "$IMG/tinfoil-inference-v$V.raw" >/dev/null
+# verify the reassembled raw matches the attested manifest
+test "$(sha256sum $IMG/tinfoil-inference-v$V.raw | awk '{print $1}')" = \
+     "$(jq -r .raw /tmp/cvm/tinfoil-inference-v$V-manifest.json)" && echo "raw OK"
+ROOT=$(jq -r .root /tmp/cvm/tinfoil-inference-v$V-manifest.json)
 
-Make changes, commit, then re-run **Tinfoil Container Build** with a fresh version (e.g. `v0.0.2`). Click **Update** in the dashboard once the tag exists.
+# b) run the vault in sigstore mode (default verifier — no -pin-measurement/-dev-verify)
+./svault -addr 0.0.0.0:8099 -identity vault_identity.json &   # needs egress to GitHub + KDS
+KEY=$(grep -oE 'vault HPKE key: [0-9a-f]+' nohup.out | awk '{print $4}')
 
-## Documentation
+# c) store the secret under THIS repo
+tinfoil-cli vault put DEMO_SECRET --value 's3cret' \
+  --repo tyurek/confidential-secret-demo --vault http://localhost:8099 --vault-hpke-key "$KEY"
 
-[docs.tinfoil.sh/containers](https://docs.tinfoil.sh/containers/overview)
+# d) dev-launch NON-debug. The cmdline must equal measure.py's exactly:
+HASH=$(sha256sum tinfoil-config.yml | awk '{print $1}')
+CMDLINE="readonly=on pci=realloc,nocrs modprobe.blacklist=nouveau nouveau.modeset=0 root=/dev/mapper/root roothash=${ROOT} tinfoil-config-hash=${HASH}"
+jq -n --arg cmd "$CMDLINE" --arg cfg "$(base64 -w0 tinfoil-config.yml)" \
+      --arg ext "$(cat external-config.yml)" \
+  '{name:("secret-demo-"+ (now|floor|tostring)), cpus:4, memory:4096, debug:false,
+    skip_manifest:true, config:$cfg, external_config:$ext, custom_cmdline:$cmd}' \
+| curl -s -X POST http://localhost:8080/dev-launch -H 'Content-Type: application/json' --data-binary @-
+```
+
+## 3. Verify
+- `journalctl`/vault log shows `released 1 secret(s) for tyurek/confidential-secret-demo`,
+  and the deployment reaches `ready`.
+- Through the shim (no SSH): `curl -k https://localhost:<http_port>/secret-check` → `DEMO_SECRET len=6`.
+- The host only ever saw the secret **name** + a release count — never the value.
+
+If the `code == enclave` measurement check fails, the cmdline didn't match: confirm
+`debug:false`, the exact `roothash` (manifest `root`), and `tinfoil-config-hash` =
+`sha256(tinfoil-config.yml)`.

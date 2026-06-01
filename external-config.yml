@@ -1,0 +1,12 @@
+# Private, host-authored config for the box2 dev-launch (NOT measured, NOT in this
+# repo's release). Provided to tinfoild at dev-launch time. Real mode (no `dev:`),
+# so boot stage 3b sends the genuine SEV-SNP quote; the vault's snpVerifier then
+# checks this repo's sigstore attestation and binds it to the quote's measurement.
+env:
+  DOMAIN: "secret-demo.box2.tinfoil.sh"   # any non-localhost domain → real attestation
+
+vault:
+  url: "http://10.0.2.2:8099"             # box2 host vault, reached via the qemu SLIRP gateway
+  repo: "tyurek/confidential-secret-demo" # the tenant key: where the attestation lives
+  secrets: [DEMO_SECRET]
+  # digest: "sha256:..."                  # optional: pin a release; omitted → vault uses latest

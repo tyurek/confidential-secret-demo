@@ -41,7 +41,7 @@ under `tyurek/confidential-secret-demo`.
 > So launch with `debug:false` — and verify via the shim, not SSH.
 
 ```bash
-V=0.0.0.4; R=tyurek/cvmimage; IMG=/mnt/large/tinfoil/images   # box2 ImageDir
+V=0.0.0.6; R=tyurek/cvmimage; IMG=/mnt/large/tinfoil/images   # box2 ImageDir
 
 # a) fetch the cvmimage-fork artifacts + reassemble the raw into the ImageDir
 #    (so tinfoild's FetchLegacy cache-hits instead of hitting images.tinfoil.sh)

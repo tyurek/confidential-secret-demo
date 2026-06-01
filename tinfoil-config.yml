@@ -4,7 +4,7 @@
 #
 # cvm-version must be a cvmimage-fork release that ships the split raw (so box2 can
 # reconstruct the raw to dev-launch). Cut that release first, then set it here.
-cvm-version: "0.0.0.4"
+cvm-version: "0.0.0.6"
 
 cpus: 4
 memory: 4096
